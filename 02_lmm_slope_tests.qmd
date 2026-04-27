@@ -1,0 +1,77 @@
+---
+title: "Soybean Yield Response to Direct and Residual Phosphorus"
+subtitle: "Phosphorus Use Efficiency and Slope Comparison (LMM)"
+author: "Gustavo A. Roa"
+date: "2026-04-23"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+This section evaluates the relative effects of residual phosphorus (P_corn) and direct phosphorus (P_soy) on soybean grain yield using a linear mixed model.
+
+# Load Required Libraries
+```{r}
+library(tidyverse)    # Core tidyverse packages
+library(readxl)       # read Excel files
+library(lme4)         # mixed models
+library(car)          # 
+
+```
+
+# Data Preparation
+## Load data
+```{r}
+# Import dataset
+raw_data <- read_excel("soybean_P_response_dataset.xlsx", sheet = "data")
+
+# Inspect structure
+#str(raw_data)
+
+```
+
+# Model 1: Yield response to P sources
+$$
+Y_{ij} = \mu + \beta_1 P_{\text{corn},ij} + \beta_2 P_{\text{soy},ij} + s_j + \varepsilon_{ij}
+$$
+
+where:
+
+- $Y_{ij}$ is grain yield
+- $\mu$ is the overall mean
+- $\beta_1$ = yield increase per unit of residual P (efficiency)
+- $\beta_2$ = yield increase per unit of direct P (efficiency)
+- $s_j \sim \mathcal{N}(0, \sigma_s^2)$ = random effect of site
+- $\varepsilon_{ij} \sim \mathcal{N}(0, \sigma^2)$ = residual error
+
+## Fit model
+```{r}
+# Linear mixed model:
+model_eff <- lmer(yield_mg_ha ~ P_corn + P_soy + (1|loc_num), data = raw_data)
+
+# Summary
+summary(model_eff)
+```
+
+## Hypothesis test
+Test whether residual and direct P effects are equal:
+$$
+H_0: \beta_1 = \beta_2
+$$
+
+```{r}
+# Test equality of slopes (efficiency between sources)
+car::linearHypothesis(model_eff, "P_corn = P_soy")
+
+```
+
+
+
+

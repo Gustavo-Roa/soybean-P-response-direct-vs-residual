@@ -1,0 +1,376 @@
+---
+title: "Soybean Yield Response to Direct and Residual Phosphorus"
+subtitle: "Nonlinear Mixed Model and Critical P Estimation"
+author: "Gustavo A. Roa"
+date: "2026-04-23"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+This section estimates the yield response and critical P levels for residual (corn) and direct (soybean) phosphorus using nonlinear mixed-effects models.
+
+# Load Required Libraries
+```{r}
+library(tidyverse)    # Core tidyverse packages
+library(readxl)       # read Excel files
+library(nlme)         # Non Linear Mix Effects 
+
+```
+
+# Data preparation
+## Load dataset
+```{r}
+# Import dataset
+raw_data <- read_excel("soybean_P_response_dataset.xlsx", sheet = "data")
+
+# Inspect structure
+#str(raw_data)
+```
+
+## Split data by application pathway
+```{r}
+# Residual P (corn phase): no direct P applied
+df_corn_raw <- raw_data %>% 
+  filter(P_soy == 0)
+
+# Direct P (soybean phase): no residual P applied
+df_soy_raw  <- raw_data %>% 
+  filter(P_corn == 0)
+
+# Define a common P variable for modeling
+df_corn_raw$P <- df_corn_raw$P_corn
+df_soy_raw$P  <- df_soy_raw$P_soy
+
+```
+
+
+# Nonlinear mixed model (linear–plateau)
+## Model definition
+The model follows a linear–plateau response:
+$$
+Y = 
+\begin{cases}
+a + bP & \text{if } P < x_s \\
+a + b x_s & \text{if } P \ge x_s
+\end{cases}
+$$
+
+where:
+- $\beta = initialslope (efficiency)$
+- $\xs  = breakpoint (critical P)$ 
+
+## Fit model: residual P (corn)
+```{r}
+nlmm_corn <- nlme(
+  yield_mg_ha ~ ifelse(P < xs, a + b*P, a + b*xs),
+  data = df_corn_raw,
+  fixed = a + b + xs ~ 1,
+  random = a ~ 1 | loc_num/rep,
+  start = c(a = 3.0, b = 0.01, xs = 100),
+  method = "REML"
+)
+
+summary(nlmm_corn)
+
+```
+### CI for residual P (corn)
+
+```{r}
+# Function to extract fixed effects
+boot_fun <- function(fit) {
+  fixef(fit)
+}
+
+# Bootstrap
+set.seed(123)
+
+sites <- unique(df_corn_raw$loc_num)
+R <- 1000
+
+boot_mat_R <- matrix(NA, nrow = R, ncol = 3)
+
+for (r in 1:R) {
+  
+  # Sample sites with replacement
+  sampled_sites <- sample(sites, size = length(sites), replace = TRUE)
+  
+  # Build bootstrap dataset (preserve full site structure)
+  d <- dplyr::bind_rows(
+    lapply(sampled_sites, function(s) {
+      df_corn_raw %>% dplyr::filter(loc_num == s)
+    })
+  )
+  
+  # Fit model
+  fit <- try(
+    suppressWarnings(
+      nlme(
+        yield_mg_ha ~ ifelse(P < xs, a + b*P, a + b*xs),
+        data = d,
+        fixed = a + b + xs ~ 1,
+        random = a ~ 1 | loc_num/rep,
+        start = c(a = 3.0, b = 0.01, xs = 100),  # key difference for corn
+        method = "REML",
+        control = nlmeControl(msMaxIter = 100)
+      )
+    ),
+    silent = TRUE
+  )
+  
+  # Store results if valid
+  if (!inherits(fit, "try-error")) {
+    vals <- fixef(fit)
+    if (all(is.finite(vals))) {
+      boot_mat_R[r, ] <- vals
+    }
+  }
+}
+
+# Extract xs (3rd parameter)
+xs_vals_R <- boot_mat_R[, 3]
+xs_vals_R <- xs_vals_R[!is.na(xs_vals_R)]
+
+# Confidence interval
+xs_ci_R <- quantile(xs_vals_R, c(0.025, 0.975))
+
+xs_ci_R
+
+```
+
+## Fit model: direct P (soybean)
+```{r}
+nlmm_soy <- nlme(
+  yield_mg_ha ~ ifelse(P < xs, a + b*P, a + b*xs),
+  data = df_soy_raw,
+  fixed = a + b + xs ~ 1,
+  random = a ~ 1 | loc_num/rep,
+  start = c(a = 3.0, b = 0.01, xs = 40),
+  method = "REML"
+)
+
+summary(nlmm_soy)
+
+```
+
+### CI for direct P (soybean)
+```{r}
+# Function to extract fixed effects
+boot_fun <- function(fit) {
+  fixef(fit)
+}
+
+# Bootstrap
+set.seed(123)
+
+sites <- unique(df_soy_raw$loc_num)
+R <- 1000
+
+boot_mat <- matrix(NA, nrow = R, ncol = 3)
+
+for (r in 1:R) {
+  
+  # Sample sites with replacement
+  sampled_sites <- sample(sites, size = length(sites), replace = TRUE)
+  
+  # Build bootstrap dataset (duplicate sites if sampled multiple times)
+  d <- dplyr::bind_rows(
+    lapply(sampled_sites, function(s) {
+      df_soy_raw %>% dplyr::filter(loc_num == s)
+    })
+  )
+  
+  # Fit model
+  fit <- try(
+    suppressWarnings(
+      nlme(
+        yield_mg_ha ~ ifelse(P < xs, a + b*P, a + b*xs),
+        data = d,
+        fixed = a + b + xs ~ 1,
+        random = a ~ 1 | loc_num/rep,
+        start = c(a = 3.0, b = 0.01, xs = 40),
+        method = "REML",
+        control = nlmeControl(msMaxIter = 100)
+      )
+    ),
+    silent = TRUE
+  )
+  
+  # Store results if valid
+  if (!inherits(fit, "try-error")) {
+    vals <- fixef(fit)
+    if (all(is.finite(vals))) {
+      boot_mat[r, ] <- vals
+    }
+  }
+}
+
+# Extract xs (3rd parameter)
+xs_vals_D <- boot_mat[, 3]
+xs_vals_D <- xs_vals_D[!is.na(xs_vals_D)]
+
+# Confidence interval
+xs_ci_D <- quantile(xs_vals_D, c(0.025, 0.975))
+
+xs_ci_D
+
+```
+
+
+
+## Model predictions
+
+```{r}
+# Generate prediction curves
+
+# Prediction grids
+new_corn <- data.frame(P = seq(1, 136, by = 1))
+new_soy  <- data.frame(P = seq(1, 100, by = 1))
+
+# Population-level predictions
+new_corn$y_pred <- predict(nlmm_corn, newdata = new_corn, level = 0)
+new_soy$y_pred  <- predict(nlmm_soy,  newdata = new_soy,  level = 0)
+
+# Combine
+new_corn$type <- "Corn"
+new_soy$type  <- "Soy"
+
+df_pred <- bind_rows(new_corn, new_soy)
+
+```
+
+## Observed summaries
+```{r}
+# Compute means and variability
+
+# Residual P
+df_obs_corn <- df_corn_raw %>%
+  mutate(P = P_corn, type = "Corn") %>%
+  group_by(type, P) %>%
+  summarise(
+    mean_y = mean(yield_mg_ha, na.rm = TRUE),
+    sd = sd(yield_mg_ha, na.rm = TRUE),
+    n = n(),
+    se = sd / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    P_plot = P + 1.5,
+    lower_sd = mean_y - sd,
+    upper_sd = mean_y + sd
+  )
+
+# Direct P
+df_obs_soy <- df_soy_raw %>%
+  mutate(P = P_soy, type = "Soy") %>%
+  group_by(type, P) %>%
+  summarise(
+    mean_y = mean(yield_mg_ha, na.rm = TRUE),
+    sd = sd(yield_mg_ha, na.rm = TRUE),
+    n = n(),
+    se = sd / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    P_plot = P - 1.5,
+    lower_sd = mean_y - sd,
+    upper_sd = mean_y + sd
+  )
+
+df_obs <- bind_rows(df_obs_corn, df_obs_soy)
+
+```
+
+## Extract breakpoints
+```{r}
+xs_corn <- fixef(nlmm_corn)["xs"]
+xs_soy  <- fixef(nlmm_soy)["xs"]
+
+# Breakpoint data (so color maps correctly)
+df_breaks <- data.frame(
+  type = c("Corn", "Soy"),
+  xs   = c(xs_corn, xs_soy),
+  xmin = c(xs_ci_R[1], xs_ci_D[1]),
+  xmax = c(xs_ci_R[2], xs_ci_D[2]),
+  yend = c(3.6, 3.6)
+)
+
+# Create label
+df_breaks$label <- sprintf(
+  "%d (%d–%d)",
+  round(df_breaks$xs),
+  round(df_breaks$xmin),
+  round(df_breaks$xmax)
+)
+
+```
+
+# Visualization
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+
+FigX <- ggplot() +
+  
+  # Model predictions
+  geom_line(data = df_pred,
+            aes(P, y_pred, color = type),
+            linewidth = 2) +
+  
+  # Observed means
+  geom_point(data = df_obs,
+             aes(P_plot, mean_y, color = type),
+             size = 5) +
+  
+  # Variability (SD)
+  geom_errorbar(data = df_obs,
+                aes(P_plot, ymin = lower_sd, ymax = upper_sd, color = type),
+                width = 2,
+                linewidth = 1) +
+  
+  # Breakpoints
+  geom_segment(data = df_breaks,
+               aes(x = xs, xend = xs, y = 0, yend = yend, color = type),
+               linetype = "dashed",
+               linewidth = 1.5) +
+  
+  geom_text(data = df_breaks,
+            aes(x = xs + 2, y = 1.2, label = label),
+            color = "black",
+            size = 6,
+            hjust = 0,
+            show.legend = FALSE) +
+  
+  scale_y_continuous(limits = c(0, 5), breaks = seq(0, 5, 1), expand = c(0,0)) +
+  scale_x_continuous(limits = c(0, 140), breaks = c(0, 34, 67, 101, 134)) +
+  
+  scale_color_viridis_d(
+    option = "cividis",
+    labels = c("Corn" = "Residual P (corn)",
+               "Soy"  = "Direct P (soybean)")
+  ) +
+  
+  labs(
+    x = expression(Phosphorus~rate~(kg~P[2]*O[5]~ha^-1)),
+    y = expression(Grain~yield~(Mg~ha^-1)),
+    color = ""
+  ) +
+  
+  theme_classic(base_size = 22) +
+  theme(
+    axis.text = element_text(color = "black"),
+    panel.background = element_rect(color = "black", linewidth = 2),
+    legend.key = element_rect(color = "white"),
+    legend.position = "top"
+  )
+
+FigX 
+
+```
+

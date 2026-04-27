@@ -1,0 +1,254 @@
+---
+title: "Soybean Yield Response to Direct and Residual Phosphorus"
+subtitle: "Linear Mixed Model Analysis and Visualization"
+author: "Gustavo A. Roa"
+date: "2026-04-23"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+
+
+# Load Required Libraries
+
+```{r}
+library(tidyverse)    # Core tidyverse packages
+library(readxl)       # read Excel files
+library(lme4)         # mixed models
+library(lmerTest)     # Kenward–Roger
+library(emmeans)      # Estimated mean marginal means
+library(multcomp)     # cld() for emmGrid
+#library(writexl)      # write Excel files
+
+```
+
+# Data Preparation
+
+## Load data
+
+```{r}
+# Import dataset
+raw_data <- read_excel("soybean_P_response_dataset.xlsx", sheet = "data")
+
+# Inspect structure
+str(raw_data)
+
+```
+
+## Data setup
+
+```{r}
+# Convert relevant variables to factors
+raw_data <- raw_data %>%
+  mutate(across(c(loc_num, loc_name, trt_name), as.factor))
+
+# Define treatment order (used in models and plots)
+raw_data$trt_name <- factor(raw_data$trt_name,
+  levels = c("0","34 R","67 R","101 R","134 R","34 D","67 D","101 D"))
+
+```
+
+## Analysis dataset
+
+```{r}
+# Standardize variable names for modeling
+model_data <- raw_data %>%
+  mutate(
+    response = yield_mg_ha,
+    trt      = trt_name,
+    rep      = rep
+  )
+
+```
+
+# Linear Mixed Model Analysis
+
+## By-site models
+
+For each site, the following linear mixed model was fitted:
+
+$$
+Y_{ijk} = \mu + \tau_i + b_j + \varepsilon_{ijk}
+$$ where:
+
+-   $Y_{ijk}$ is grain yield,
+
+-   $\mu$ is the overall mean,
+
+-   $\tau_i$ is the fixed effect of phosphorus treatment
+
+-   $i$, $b_j \sim \mathcal{N}(0, \sigma_b^2)$ is the random effect of block (rep),
+
+-   $\varepsilon_{ijk} \sim \mathcal{N}(0, \sigma^2)$ is the residual error.
+
+This corresponds to: `lmer(response ~ trt + (1 | rep))`
+
+```{r}
+# Split dataset by site
+data_list <- split(model_data, model_data$loc_num)
+
+results_all_sites <- tibble()
+
+for (i in data_list) {
+
+  # Skip if insufficient variation
+  if (nlevels(i$trt) < 2 || all(is.na(i$response))) next
+
+  # Fit model
+  model_site <- lmer(response ~ trt + (1 | rep),
+                     data = i, REML = TRUE)
+
+  # ANOVA
+  anov <- anova(model_site, ddf = "Kenward-Roger")
+
+  # Extract p-value
+  p_value <- anov["trt", "Pr(>F)"]
+  p_value_2 <- if (is.finite(p_value) && p_value < 0.001) "<0.001" else sprintf("%.3f", p_value)
+
+  # Estimated means and grouping
+  means <- emmeans(model_site, ~ trt, lmer.df = "kenward-roger")
+
+  results <- cld(means, Letters = letters, adjust = "sidak") %>%
+    as.data.frame() %>%
+    mutate(
+      letter      = trimws(.group),
+      Sites       = as.character(i$loc_num[1]),
+      Location    = as.character(i$loc_name[1]),
+      p_value_num = p_value,
+      P_Value     = p_value_2
+    )
+
+  # Store results
+  results_all_sites <- bind_rows(results_all_sites, results)
+}
+
+```
+
+## Across-site model
+
+The combined analysis across sites was conducted using:
+
+$$
+Y_{ijkl} = \mu + \tau_i + s_k + b_{j(k)} + \varepsilon_{ijkl}
+$$
+
+where:
+
+-   $Y_{ijkl}$ is grain yield,
+-   $\mu$ is the overall mean,
+-   $\tau_i$ is the fixed effect of phosphorus treatment $i$,
+-   $s_k \sim \mathcal{N}(0, \sigma_s^2)$ is the random effect of site,
+-   $b_{j(k)} \sim \mathcal{N}(0, \sigma_b^2)$ is the random effect of block nested within site,
+-   $\varepsilon_{ijkl} \sim \mathcal{N}(0, \sigma^2)$ is the residual error.
+
+This corresponds to:
+
+`lmer(response ~ trt + (1 | loc_num/rep))`
+
+```{r}
+# Mixed model: treatment fixed, rep nested within location random
+model_across <- lmer(response ~ trt + (1 | loc_num/rep),
+                     data = model_data, REML = TRUE)
+
+# ANOVA (Kenward-Roger correction)
+anov_across <- anova(model_across, ddf = "Kenward-Roger")
+
+# Extract p-value for treatment effect
+p_value <- anov_across["trt", "Pr(>F)"]
+p_value_2 <- if (is.finite(p_value) && p_value < 0.001) "<0.001" else sprintf("%.3f", p_value)
+
+# Estimated marginal means and grouping
+means_across <- emmeans(model_across, ~ trt, lmer.df = "kenward-roger")
+
+results_across <- cld(means_across, Letters = letters, adjust = "sidak") %>%
+  as.data.frame() %>%
+  mutate(
+    letter      = trimws(.group),
+    Sites       = "Across",
+    Location    = "All sites",
+    p_value_num = p_value,
+    P_Value     = p_value_2
+  )
+
+```
+
+## Combine results
+
+```{r}
+# Merge across-site and site-specific results
+results_final <- bind_rows(results_all_sites, results_across)
+
+# Remove grouping letters when treatment effect is not significant
+results_final$letter <- ifelse(
+  is.na(results_final$p_value_num) | results_final$p_value_num > 0.05,
+  "",
+  results_final$letter
+)
+
+results_final
+#write_xlsx(results_final, "./Anova results_final.xlsx")
+
+```
+
+# Visualization
+
+## Prepare plotting dataset
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+
+df_plot <- results_final %>%
+  mutate(
+    trt_label = factor(trt,
+      levels = c("0","34 R","67 R","101 R","134 R","34 D","67 D","101 D")
+    ),
+    source = ifelse(grepl("D", trt),
+                    "Direct P (soybean)",
+                    "Residual P (corn)"),
+    Sites = factor(Sites,
+      levels = c("1","2","3","4","5","6","Across"))
+  )
+
+```
+
+## Plot
+
+```{r, fig.width=10, fig.height=14, warning=FALSE}
+
+FigX <- ggplot(df_plot, aes(x = trt_label, y = emmean, color = source)) +
+  
+  geom_point(size = 4) +
+  
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),
+                width = 0.2, linewidth = 0.8) +
+  
+  # Position letters relative to CI (consistent across panels)
+  geom_text(aes(label = letter,
+                y = upper.CL + 0.15 * (upper.CL - lower.CL)),
+            color = "black", size = 5.5) +
+  
+  facet_wrap(~ Sites, scales = "free_y", ncol = 2) +
+  
+  scale_color_viridis_d(option = "cividis") +
+  
+  labs(x = expression(Phosphorus~rate~(kg~P[2]*O[5]~ha^-1)),
+    y = expression(Grain~yield~(Mg~ha^-1)),
+    color = "") +
+  
+  theme_classic(base_size = 22) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.background = element_rect(color = "black", linewidth = 1.5),
+    legend.key = element_rect(color = "white"),
+    legend.position = "top")
+
+FigX
+
+```
+
