@@ -1,0 +1,255 @@
+---
+title: "Soybean Yield Response to Direct and Residual Phosphorus"
+subtitle: "Logistic regression: Probability of response"
+author: "Gustavo A. Roa"
+date: "2026-04-23"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Overview
+
+
+# Load Required Libraries
+```{r}
+library(tidyverse)    # Core tidyverse packages
+library(readxl)       # read Excel files
+library(lme4)         # mixed models
+library(lmerTest)     # Kenward–Roger
+library(emmeans)      # Estimated mean marginal means
+library(multcomp)     # cld() for emmGrid
+library(writexl)      # write Excel files
+
+```
+
+
+# Data preparation
+## Load dataset
+```{r}
+# Import dataset
+raw_data <- read_excel("soybean_P_response_dataset.xlsx", sheet = "data")
+
+# Inspect structure
+str(raw_data)
+```
+
+## Data setup
+
+```{r}
+# Convert relevant variables to factors
+raw_data <- raw_data %>%
+  mutate(across(c(loc_num, loc_name, trt_name), as.factor))
+
+# Define treatment order (used in models and plots)
+raw_data$trt_name <- factor(raw_data$trt_name,
+  levels = c("0","34 R","67 R","101 R","134 R","34 D","67 D","101 D"))
+
+```
+
+
+
+## Split data by application pathway
+```{r}
+# Residual P (corn phase): no direct P applied
+df_corn_raw <- raw_data %>% 
+  filter(P_soy == 0)
+
+# Direct P (soybean phase): no residual P applied
+df_soy_raw  <- raw_data %>% 
+  filter(P_corn == 0)
+
+# Define a common P variable for modeling
+df_corn_raw$P <- df_corn_raw$P_corn
+df_soy_raw$P  <- df_soy_raw$P_soy
+
+
+```
+
+# Residual 
+## Analysis dataset
+
+```{r}
+# Standardize variable names for modeling
+model_data <- raw_data %>%
+  mutate(
+    response = yield_mg_ha,
+    trt      = trt_name,
+    rep      = rep
+  )
+
+```
+
+```{r}
+# Split dataset by site
+data_list <- split(model_data, model_data$loc_num)
+
+results_all_sites <- tibble()
+
+for (i in data_list) {
+
+  # Skip if insufficient variation
+  if (nlevels(i$trt) < 2 || all(is.na(i$response))) next
+
+  # Fit model
+  model_site <- lmer(response ~ trt + (1 | rep),
+                     data = i, REML = TRUE)
+
+  # ANOVA
+  anov <- anova(model_site, ddf = "Kenward-Roger")
+
+  # Extract p-value
+  p_value <- anov["trt", "Pr(>F)"]
+  p_value_2 <- if (is.finite(p_value) && p_value < 0.001) "<0.001" else sprintf("%.3f", p_value)
+
+  # Estimated means and grouping
+  means <- emmeans(model_site, ~ trt, lmer.df = "kenward-roger")
+
+  # Dunnett test: all treatments vs control
+  results <- contrast(
+    means,
+    method = "trt.vs.ctrl",
+    ref = "0",
+    adjust = "dunnett"
+  ) %>%
+    as.data.frame() %>%
+    mutate(
+      Responsive = ifelse(p.value < 0.05, 1, 0),
+      Sites       = as.character(i$loc_num[1]),
+      Location    = as.character(i$loc_name[1]),
+      p_value_num = p_value,
+      P_Value     = p_value_2
+    )
+
+  # Store results
+  results_all_sites <- bind_rows(results_all_sites, results)
+}
+
+results_all_sites
+
+str(results_all_sites)
+
+#write_xlsx(results_all_sites, "./Anova results_all_sites Direct.xlsx")
+
+```
+
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+df <- results_all_sites %>%
+  mutate(
+    trt = gsub(" - 0", "", contrast)
+  )
+
+
+# Reorder treatment levels
+df$trt <- factor(
+  df$trt,
+  levels = c(
+    "34 R",
+    "67 R",
+    "101 R",
+    "134 R",
+    "34 D",
+    "67 D",
+    "101 D"
+  )
+)
+```
+
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+
+Fig_1 <- ggplot(df,
+       aes(x = trt,
+           y = factor(Responsive),
+           fill = factor(Responsive))) +
+  
+  geom_tile(color = "white", linewidth = 0.8) +
+  
+  facet_wrap(~ Sites, ncol = 3) +
+  
+  scale_fill_viridis_d(
+    option = "cividis",
+    labels = c("Non-responsive",
+               "Responsive"),
+    name = "Classification"
+  ) +
+  
+  scale_y_discrete(
+    labels = c("0" = "Non-responsive",
+               "1" = "Responsive")
+  ) +
+  
+  labs(
+    x = "Treatment",
+    y = NULL
+  ) +
+  
+  theme_bw(base_size = 22) +
+  
+  theme(
+    panel.grid = element_blank(),
+    strip.background = element_rect(fill = "white"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+Fig_1
+
+```
+
+
+
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+prob_trt <- df %>%
+  group_by(trt) %>%
+  summarise(
+    prob_response = mean(Responsive),
+    n = n()
+  )
+
+prob_trt
+```
+
+
+```{r, fig.width=12, fig.height=8, warning=FALSE}
+Fig_2 <- ggplot(prob_trt,
+       aes(x = trt,
+           y = prob_response,
+           fill = trt)) +
+  
+  geom_col(color = "black") +
+  
+  scale_fill_viridis_d(option = "cividis") +
+  
+  scale_y_continuous(
+    limits = c(0, 1)
+  ) +
+  
+  labs(
+    x = "Treatment",
+    y = "Probability of response"
+  ) +
+  
+  theme_bw(base_size = 22) +
+  
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    strip.background = element_rect(fill = "white"),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+Fig_2
+
+```
+
+
+
+
